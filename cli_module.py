@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 import base64
 
+# Імпортуємо наші модулі IO та Crypto
 from io_module import read_and_validate
 from crypto_module import (
     generate_x25519_keypair, export_key_to_files,
@@ -14,6 +15,7 @@ from crypto_module import (
     encode_key_to_str, decode_key_from_str
 )
 
+# Налаштування логування: INFO або DEBUG (за допомогою --debug)
 logger = logging.getLogger()
 handler = logging.StreamHandler()
 formatter = logging.Formatter("[%(levelname)s] %(message)s")
@@ -22,6 +24,9 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 def load_config(path):
+    """
+    Завантажує конфігурацію з TOML-файлу.
+    """
     try:
         with open(path, "rb") as f:
             config = tomllib.load(f)
@@ -35,6 +40,9 @@ def load_config(path):
 @click.option('--debug', is_flag=True, help="Увімкнути режим відладки (DEBUG логування)")
 @click.pass_context
 def cli(ctx, config, debug):
+    """
+    Інтерфейс командного рядка для шифрування геопросторових даних.
+    """
     if debug:
         logger.setLevel(logging.DEBUG)
     ctx.ensure_object(dict)
@@ -43,6 +51,9 @@ def cli(ctx, config, debug):
 @cli.command()
 @click.pass_context
 def keygen(ctx):
+    """
+    Генерує пару ключів (X25519) і зберігає їх за шляхами з конфігурації.
+    """
     config = load_config(ctx.obj['CONFIG'])
     priv_path = config.get("keys", {}).get("private")
     pub_path = config.get("keys", {}).get("public")
@@ -61,13 +72,18 @@ def keygen(ctx):
 @click.option('--output', default=None, type=click.Path(), help="Шлях для вихідного ZIP-файлу")
 @click.pass_context
 def encrypt(ctx, input_file, output):
+    """
+    Зашифровує файл (GeoJSON, KML або CSV) в ZIP-архів із метаданими.
+    """
     config = load_config(ctx.obj['CONFIG'])
+    # Зчитуємо вхідні дані
     try:
         filename, data_bytes = read_and_validate(input_file, config)
     except Exception as e:
         logger.error(f"Помилка під час читання файлу: {e}")
         return
 
+    # Імпортуємо публічний ключ отримувача
     pub_key_path = config.get("keys", {}).get("public")
     if not pub_key_path:
         logger.error("Не вказано публічний ключ отримувача у конфігурації")
@@ -78,13 +94,16 @@ def encrypt(ctx, input_file, output):
         logger.error(e)
         return
 
+    # Генеруємо ефемерну пару та спільний секрет
     eph_priv, eph_pub = generate_x25519_keypair()
     shared = derive_shared_key(eph_priv, receiver_pub)
     logger.debug("Обчислено спільний секрет для шифрування")
 
+    # Шифруємо дані AES-GCM
     ciphertext, nonce, tag = aes_gcm_encrypt(data_bytes, shared)
     logger.info(f"Дані успішно зашифровано (AES-GCM).")
 
+    # Підготовка ZIP
     zip_path = output if output else f"{Path(input_file).stem}_encrypted.zip"
     metadata = {
         "filename": filename,
@@ -119,6 +138,7 @@ def decrypt(ctx, zip_file):
         logger.error(e)
         return
 
+    # Відкриваємо ZIP і зчитуємо дані
     try:
         with zipfile.ZipFile(zip_file, 'r') as zf:
             ciphertext = zf.read("encrypted_data.bin")
@@ -127,6 +147,7 @@ def decrypt(ctx, zip_file):
         logger.error(f"Не вдалося відкрити ZIP або зчитати файли: {e}")
         return
 
+    # Декодуємо поля метаданих
     filename = metadata.get("filename")
     eph_key_b64 = metadata.get("ephemeral_key")
     nonce_b64 = metadata.get("nonce")
@@ -143,18 +164,21 @@ def decrypt(ctx, zip_file):
         logger.error(f"Помилка обробки метаданих: {e}")
         return
 
+    # Обчислюємо спільний секрет
     try:
         shared = derive_shared_key(own_priv, eph_pub)
     except Exception as e:
         logger.error(e)
         return
 
+    # Розшифровуємо AES-GCM
     try:
         plaintext = aes_gcm_decrypt(ciphertext, nonce, tag, shared)
     except Exception as e:
         logger.error(f"Не вдалося розшифрувати дані: {e}")
         return
 
+    # Записуємо відновлені дані у файл
     try:
         with open(filename, "wb") as f:
             f.write(plaintext)
