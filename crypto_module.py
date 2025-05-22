@@ -1,22 +1,87 @@
+from pathlib import Path
 from Crypto.PublicKey import ECC
+from Crypto.Protocol import DH
 from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
+import base64
 
-def generate_keypair():
-    private_key = ECC.generate(curve='curve25519')
-    public_key = private_key.public_key()
-    return private_key, public_key
 
-def encrypt_data(data: bytes, recipient_pubkey: ECC.EccKey) -> dict:
-    ephemeral_private, ephemeral_public = generate_keypair()
-    shared_secret = ephemeral_private.d * recipient_pubkey.pointQ
-    aes_key = int.to_bytes(shared_secret.x, 32, 'big')
-    nonce = get_random_bytes(12)
-    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
+def generate_x25519_keypair():
+
+    key = ECC.generate(curve='curve25519')
+    priv = key
+    pub = key.public_key()
+    return priv, pub
+
+def export_key_to_files(private_key, public_key, priv_path, pub_path):
+    try:
+        Path(priv_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(pub_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        priv_pem = private_key.export_key(format='PEM', use_pkcs8=True)
+        pub_pem = public_key.export_key(format='PEM')
+        with open(priv_path, 'wt') as f:
+            f.write(priv_pem)
+        with open(pub_path, 'wt') as f:
+            f.write(pub_pem)
+    except Exception as e:
+        raise IOError(f"Помилка запису ключів: {e}")
+
+def import_private_key(path):
+    try:
+        with open(path, 'rt') as f:
+            data = f.read()
+        key = ECC.import_key(data)
+        return key
+    except Exception as e:
+        raise IOError(f"Не вдалося імпортувати приватний ключ: {e}")
+
+def import_public_key(path):
+    try:
+        with open(path, 'rt') as f:
+            data = f.read()
+        key = ECC.import_key(data)
+        return key
+    except Exception as e:
+        raise IOError(f"Не вдалося імпортувати публічний ключ: {e}")
+
+def derive_shared_key(our_priv, their_pub):
+    def sha256_kdf(x):
+        return SHA256.new(x).digest()
+    try:
+        shared = DH.key_agreement(
+            static_priv=our_priv,
+            eph_pub=their_pub,
+            kdf=sha256_kdf
+        )
+        return shared
+    except Exception as e:
+        raise ValueError(f"Не вдалося виконати обмін ключами: {e}")
+
+def aes_gcm_encrypt(data, key):
+    nonce = get_random_bytes(12)  # 12 байт рекомендовано для GCM
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(data)
-    return {
-        'ciphertext': ciphertext,
-        'nonce': nonce,
-        'tag': tag,
-        'ephemeral_pubkey': ephemeral_public.export_key(format='DER')
-    }
+    return ciphertext, nonce, tag
+
+def aes_gcm_decrypt(ciphertext, nonce, tag, key):
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    try:
+        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+        return plaintext
+    except ValueError:
+        raise ValueError("Не вдалося пройти перевірку тегу: дані пошкоджені або ключ невірний")
+
+def encode_key_to_str(pub_key):
+    raw = pub_key.export_key(format='raw')
+    return base64.b64encode(raw).decode('utf-8')
+
+def decode_key_from_str(b64_str):
+    raw = base64.b64decode(b64_str)
+    try:
+        key = DH.import_x25519_public_key(raw)
+        return key
+    except ValueError as e:
+        raise ValueError(f"Помилка імпорту ефемерного публічного ключа: {e}")
+
