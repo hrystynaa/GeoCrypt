@@ -1,0 +1,7 @@
+[keys]
+private = "keys/my_private.pem"
+public = "keys/my_public.pem"
+
+[csv]
+lat = "Latitude"
+lon = "Longitude"
